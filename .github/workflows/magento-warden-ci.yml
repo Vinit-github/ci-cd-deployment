@@ -1,0 +1,61 @@
+name: Magento CI with Warden Setup
+
+on:
+  push:
+    branches:
+      - staging
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build CI Docker Image
+        run: docker build -t magento-ci .
+
+      - name: Extract build files
+        run: |
+          CID=$(docker create magento-ci)
+          docker cp $CID:/var/www/html ./build
+          docker rm $CID
+          tar -czf build.tar.gz build/
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: magento-build
+          path: build.tar.gz
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: magento-build
+
+      - name: Extract files
+        run: tar -xzf build.tar.gz
+
+      - name: Deploy to Server
+        run: |
+          sudo apt-get install -y rsync
+
+          rsync -avz --delete build/ \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:${{ secrets.SERVER_PATH }}
+
+      - name: Run Magento Server Commands
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd ${{ secrets.SERVER_PATH }}
+            php bin/magento setup:upgrade
+            php bin/magento cache:flush
+            php bin/magento indexer:reindex
+            sudo chown -R www-data:www-data .
